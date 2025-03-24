@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "attemp1",
+        .name = "whatszig",
         .root_module = exe_mod,
     });
 
