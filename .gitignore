@@ -1,0 +1,5 @@
+zig-out
+.zig-cache
+*.db
+**.so
+**.h
