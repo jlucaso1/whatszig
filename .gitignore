@@ -3,3 +3,4 @@ zig-out
 *.db
 **.so
 **.h
+**.a

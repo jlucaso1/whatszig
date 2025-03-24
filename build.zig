@@ -37,10 +37,11 @@ pub fn build(b: *std.Build) void {
     exe.addIncludePath(b.path("gowhatsapp"));
 
     // Add the directory containing the shared library to the library search path
-    exe.addLibraryPath(b.path("gowhatsapp"));
+    // exe.addLibraryPath(b.path("gowhatsapp"));
 
     // Link against the existing whatsapp shared library
-    exe.linkSystemLibrary("whatsapp");
+    // exe.linkSystemLibrary("whatsapp");
+    exe.addObjectFile(b.path("gowhatsapp/libwhatsapp.a"));
 
     exe.linkLibC();
 

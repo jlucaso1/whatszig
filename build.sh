@@ -1,4 +1,4 @@
 #!/bin/bash
 cd gowhatsapp
-go build -buildmode=c-shared -ldflags="-s -w" -trimpath -o ./libwhatsapp.so ./whatsapp.go
+go build -buildmode=c-archive -ldflags="-s -w" -trimpath -o libwhatsapp.a whatsapp.go
 cd ..
