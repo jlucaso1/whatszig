@@ -8,11 +8,10 @@ import (
 	"sync"
 
 	"go.mau.fi/whatsmeow"
-	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
-	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
 	// Add SQLite driver import - this is needed even if not directly used
@@ -24,6 +23,11 @@ var (
 	eventHandler *waEventHandler
 	mutex        sync.Mutex
 	initialized  bool
+
+	// QR code related variables
+	qrChannel <-chan whatsmeow.QRChannelItem
+	currentQR string
+	qrStatus  string
 )
 
 type waEventHandler struct {
@@ -51,8 +55,7 @@ func Initialize() *C.char {
 		return C.CString("Already initialized")
 	}
 
-	dbLog := waLog.Stdout("Database", "DEBUG", true)
-	container, err := sqlstore.New("sqlite", "file:whatsmeow.db?_pragma=foreign_keys(1)", dbLog)
+	container, err := sqlstore.New("sqlite", "file:whatsmeow.db?_pragma=foreign_keys(1)", nil)
 	if err != nil {
 		return C.CString(fmt.Sprintf("Error connecting to database: %v", err))
 	}
@@ -62,8 +65,7 @@ func Initialize() *C.char {
 		return C.CString(fmt.Sprintf("Error getting device: %v", err))
 	}
 
-	clientLog := waLog.Stdout("Client", "DEBUG", true)
-	client = whatsmeow.NewClient(deviceStore, clientLog)
+	client = whatsmeow.NewClient(deviceStore, nil)
 	eventHandler = &waEventHandler{}
 	client.AddEventHandler(eventHandler.HandleEvent)
 
@@ -81,12 +83,28 @@ func Connect() *C.char {
 		return C.CString("Already connected")
 	}
 
-	err := client.Connect()
-	if err != nil {
-		return C.CString(fmt.Sprintf("Error connecting: %v", err))
+	// First, check if we have a session in the store
+	deviceStore := client.Store
+	if deviceStore.ID != nil {
+		// We have a device ID, so we've logged in before
+		println("Found existing session, attempting to connect with saved credentials")
+
+		// Just connect - no need for QR code since we already have credentials
+		err := client.Connect()
+		if err != nil {
+			return C.CString(fmt.Sprintf("Error connecting with existing session: %v", err))
+		}
+
+		// Verify connection
+		if client.IsConnected() {
+			return C.CString("Connected successfully with existing session")
+		} else {
+			return C.CString("Connected but session verification failed")
+		}
 	}
 
-	return C.CString("Connected successfully")
+	// If we don't have credentials yet, tell client to get QR code
+	return C.CString("Not logged in. Call GetQRCode first to start login process.")
 }
 
 //export IsLoggedIn
@@ -94,7 +112,13 @@ func IsLoggedIn() bool {
 	if !initialized {
 		return false
 	}
-	return client.IsLoggedIn()
+
+	// Check both if we have credentials and if we're properly connected
+	deviceStore := client.Store
+	hasCredentials := deviceStore != nil && deviceStore.ID != nil
+
+	// Only consider us logged in if we're also connected
+	return hasCredentials && client.IsConnected()
 }
 
 //export GetQRCode
@@ -103,17 +127,76 @@ func GetQRCode() *C.char {
 		return C.CString("Error: Must initialize first")
 	}
 
+	// Check if we already have credentials
+	deviceStore := client.Store
+	if deviceStore.ID != nil {
+		// We have a device ID, so we've logged in before
+		// We should not try to get a QR code in this case
+		return C.CString("Error: Already have credentials. Call Connect() instead of GetQRCode().")
+	}
+
 	if client.IsLoggedIn() {
 		return C.CString("Already logged in")
 	}
 
-	qrChan, _ := client.GetQRChannel(context.Background())
-	qr := <-qrChan
+	// Reset QR status
+	mutex.Lock()
+	currentQR = ""
+	qrStatus = "pending"
+	mutex.Unlock()
 
-	// Convert QR code to ASCII art for terminal display
-	qrArt := fmt.Sprintf("QR Code (scan with WhatsApp):\n\n%s", qr.Code)
+	// Get a new QR channel (must be done BEFORE connecting)
+	var err error
+	qrChannel, err = client.GetQRChannel(context.Background())
+	if err != nil {
+		return C.CString(fmt.Sprintf("Error getting QR channel: %v", err))
+	}
 
-	return C.CString(qrArt)
+	// Now we can connect
+	err = client.Connect()
+	if err != nil {
+		return C.CString(fmt.Sprintf("Error connecting: %v", err))
+	}
+
+	// Start a goroutine to handle QR codes
+	go func() {
+		for qr := range qrChannel {
+			mutex.Lock()
+			switch qr.Event {
+			case "code":
+				currentQR = qr.Code
+				qrStatus = "ready"
+				println("QR code received, call GetQRStatus() to get it")
+			case "success":
+				qrStatus = "success"
+				println("QR code scan successful")
+			case "timeout":
+				qrStatus = "timeout"
+				println("QR code timed out")
+			case "error":
+				qrStatus = fmt.Sprintf("error: %v", qr.Error)
+				println("QR error:", qr.Error)
+			default:
+				qrStatus = qr.Event
+				println("QR status:", qr.Event)
+			}
+			mutex.Unlock()
+		}
+	}()
+
+	return C.CString("QR code generation started. Call GetQRStatus() to get the code.")
+}
+
+//export GetQRStatus
+func GetQRStatus() *C.char {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if qrStatus == "ready" && currentQR != "" {
+		return C.CString(fmt.Sprintf("QR Code (scan with WhatsApp):\n\n%s", currentQR))
+	} else {
+		return C.CString(fmt.Sprintf("QR Status: %s", qrStatus))
+	}
 }
 
 //export SendMessage
@@ -126,11 +209,13 @@ func SendMessage(recipientC *C.char, messageC *C.char) *C.char {
 	message := C.GoString(messageC)
 
 	jid, err := types.ParseJID(recipient)
+	// print
+	println("[GO] Sending message to:", recipient)
 	if err != nil {
 		return C.CString(fmt.Sprintf("Invalid JID: %v", err))
 	}
 
-	msg := &waProto.Message{
+	msg := &waE2E.Message{
 		Conversation: proto.String(message),
 	}
 
