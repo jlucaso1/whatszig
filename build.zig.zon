@@ -1,7 +1,7 @@
 .{
-    .name = .attemp1,
+    .name = .whatszig,
 
-    .version = "0.0.0",
+    .version = "0.0.1",
 
     .fingerprint = 0x1e5ab7797a4d2939, // Changing this has security and trust implications.
 
