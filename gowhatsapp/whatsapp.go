@@ -87,7 +87,6 @@ func Connect() *C.char {
 	deviceStore := client.Store
 	if deviceStore.ID != nil {
 		// We have a device ID, so we've logged in before
-		println("Found existing session, attempting to connect with saved credentials")
 
 		// Just connect - no need for QR code since we already have credentials
 		err := client.Connect()
@@ -166,19 +165,14 @@ func GetQRCode() *C.char {
 			case "code":
 				currentQR = qr.Code
 				qrStatus = "ready"
-				println("QR code received, call GetQRStatus() to get it")
 			case "success":
 				qrStatus = "success"
-				println("QR code scan successful")
 			case "timeout":
 				qrStatus = "timeout"
-				println("QR code timed out")
 			case "error":
 				qrStatus = fmt.Sprintf("error: %v", qr.Error)
-				println("QR error:", qr.Error)
 			default:
 				qrStatus = qr.Event
-				println("QR status:", qr.Event)
 			}
 			mutex.Unlock()
 		}
@@ -208,15 +202,22 @@ func SendMessage(recipientC *C.char, messageC *C.char) *C.char {
 	recipient := C.GoString(recipientC)
 	message := C.GoString(messageC)
 
+	// Validate that we have actual content
+	if len(message) == 0 {
+		return C.CString("Error: Empty message")
+	}
+
 	jid, err := types.ParseJID(recipient)
-	// print
-	println("[GO] Sending message to:", recipient)
+
 	if err != nil {
 		return C.CString(fmt.Sprintf("Invalid JID: %v", err))
 	}
 
+	// Create a properly isolated message string
+	messageStr := string([]byte(message))
+
 	msg := &waE2E.Message{
-		Conversation: proto.String(message),
+		Conversation: proto.String(messageStr),
 	}
 
 	_, err = client.SendMessage(context.Background(), jid, msg)

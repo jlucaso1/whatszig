@@ -122,16 +122,22 @@ pub fn main() !void {
         var phone_buf: [20]u8 = undefined;
         const phone = try std.io.getStdIn().reader().readUntilDelimiter(&phone_buf, '\n');
 
-        // Format the JID correctly
-        var recipient_buf: [27]u8 = undefined;
-        const recipient = try std.fmt.bufPrint(&recipient_buf, "{s}@s.whatsapp.net", .{phone});
+        // Format the JID correctly with null termination
+        // Increased buffer size to 50 to accommodate larger phone numbers
+        var recipient_buf: [50]u8 = undefined;
+        const recipient = try std.fmt.bufPrintZ(&recipient_buf, "{s}@s.whatsapp.net", .{phone});
 
         std.debug.print("Enter message: ", .{});
         var message_buf: [1000]u8 = undefined;
-        const message = try std.io.getStdIn().reader().readUntilDelimiter(&message_buf, '\n');
+        const message_input = try std.io.getStdIn().reader().readUntilDelimiter(&message_buf, '\n');
+
+        // Create a null-terminated copy of the message
+        var message_with_null: [1001]u8 = undefined;
+        @memcpy(message_with_null[0..message_input.len], message_input);
+        message_with_null[message_input.len] = 0; // Add null terminator
 
         std.debug.print("Sending message to {s}...\n", .{recipient});
-        const send_result = c.SendMessage(@ptrCast(recipient.ptr), @ptrCast(message.ptr));
+        const send_result = c.SendMessage(@ptrCast(recipient.ptr), @ptrCast(&message_with_null[0]));
         defer std.c.free(send_result);
         std.debug.print("Message result: {s}\n", .{send_result});
 
