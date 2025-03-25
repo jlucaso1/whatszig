@@ -34,7 +34,7 @@ type waEventHandler struct {
 	messageCallback func(string)
 }
 
-func (h *waEventHandler) HandleEvent(evt interface{}) {
+func (h *waEventHandler) HandleEvent(evt any) {
 	switch v := evt.(type) {
 	case *events.Message:
 		if h.messageCallback != nil {
@@ -106,8 +106,8 @@ func Connect() *C.char {
 	return C.CString("Not logged in. Call GetQRCode first to start login process.")
 }
 
-//export IsLoggedIn
-func IsLoggedIn() bool {
+//export IsConnected
+func IsConnected() bool {
 	if !initialized {
 		return false
 	}
@@ -118,6 +118,15 @@ func IsLoggedIn() bool {
 
 	// Only consider us logged in if we're also connected
 	return hasCredentials && client.IsConnected()
+}
+
+//export IsLoggedIn
+func IsLoggedIn() bool {
+	if !initialized {
+		return false
+	}
+
+	return client.IsLoggedIn()
 }
 
 //export GetQRCode
