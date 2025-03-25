@@ -5,18 +5,24 @@ pub fn build(b: *std.Build) void {
 
     const optimize = b.standardOptimizeOption(.{});
 
+    const fast_mode = b.option(
+        bool,
+        "fast",
+        "Enable fast build mode (skips Go dependency checks)",
+    ) orelse false;
+
     // Add go mod download step
     const go_deps = b.addSystemCommand(&[_][]const u8{
         "go", "mod", "download",
     });
-    go_deps.setCwd(b.path("gowhatsapp"));
+    go_deps.setCwd(b.path("gowhatsapp/client"));
     go_deps.setEnvironmentVariable("CGO_ENABLED", "1");
 
     const go_lib = b.addSystemCommand(&[_][]const u8{
-        "go", "build", "-buildmode=c-archive", "-o", "libwhatsapp.a", "whatsapp.go",
+        "go", "build", "-buildmode=c-archive", "-o", "libwhatsapp.a",
     });
 
-    go_lib.setCwd(b.path("gowhatsapp"));
+    go_lib.setCwd(b.path("gowhatsapp/client"));
 
     go_lib.setEnvironmentVariable("CGO_ENABLED", "1");
 
@@ -74,9 +80,14 @@ pub fn build(b: *std.Build) void {
         break :blk triple.toOwnedSlice() catch unreachable;
     };
 
-    // Use the dynamic target triple
+    // // Use the dynamic target triple
     go_lib.setEnvironmentVariable("CC", b.fmt("zig cc -target {s}", .{target_triple}));
     go_lib.setEnvironmentVariable("CXX", b.fmt("zig c++ -target {s}", .{target_triple}));
+
+    const ws = b.dependency("websocket", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
@@ -90,16 +101,20 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    exe.addIncludePath(b.path("gowhatsapp"));
+    exe.addIncludePath(b.path("gowhatsapp/client"));
 
-    exe.addObjectFile(b.path("gowhatsapp/libwhatsapp.a"));
+    exe.addObjectFile(b.path("gowhatsapp/client/libwhatsapp.a"));
 
     exe.linkLibC();
 
-    // Make go_lib depend on go_deps
-    go_lib.step.dependOn(&go_deps.step);
+    exe.root_module.addImport("websocket", ws.module("websocket"));
 
-    exe.step.dependOn(&go_lib.step);
+    // Make go_lib depend on go_deps
+    if (!fast_mode) {
+        go_lib.step.dependOn(&go_deps.step);
+
+        exe.step.dependOn(&go_lib.step);
+    }
 
     b.installArtifact(exe);
 
