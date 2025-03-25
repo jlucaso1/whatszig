@@ -218,7 +218,16 @@ pub const WhatsAppClient = struct {
             return WhatsAppError.InvalidResponse;
         }
 
-        std.debug.print("Server response: {x}\n", .{server_response});
+        // Call processData with proper parameters and handle the result
+        const result_ptr = c.processData(server_response.ptr, @intCast(server_response.len));
+        defer std.c.free(result_ptr);
+
+        // Check if the result is not null and free it when done
+        if (result_ptr != null) {
+            const result_str2 = std.mem.span(result_ptr);
+            std.debug.print("Process data input: {d}\n", .{server_response.len});
+            std.debug.print("Process data result: {d}\n", .{result_str2.len});
+        }
 
         // Now we can start the continuous listener if needed
         try self.startSocketListener();
