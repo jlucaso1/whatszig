@@ -3,19 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"sync"
-	"time"
 )
 
 type FrameSocket struct {
-	ctx    context.Context
-	cancel func()
-	lock   sync.Mutex
+	ctx context.Context
 
-	Frames       chan []byte
-	Header       []byte
-	OnDisconnect func(remote bool)
-	WriteTimeout time.Duration
+	Frames chan []byte
+	Header []byte
 
 	incomingLength int
 	receivedLength int
@@ -33,19 +27,23 @@ func (fs *FrameSocket) Context() context.Context {
 	return fs.ctx
 }
 
-func (fs *FrameSocket) SendFrame(data []byte) error {
-
+func (fs *FrameSocket) SendFrame(data []byte) ([]byte, error) {
 	dataLength := len(data)
 	if dataLength >= FrameMaxSize {
-		return fmt.Errorf("%w (got %d bytes, max %d bytes)", ErrFrameTooLarge, len(data), FrameMaxSize)
+		return nil, fmt.Errorf("%w (got %d bytes, max %d bytes)", ErrFrameTooLarge, len(data), FrameMaxSize)
 	}
 
-	headerLength := len(fs.Header)
+	// Safely handle nil Header
+	headerLength := 0
+	if fs.Header != nil {
+		headerLength = len(fs.Header)
+	}
+
 	// Whole frame is header + 3 bytes for length + data
 	wholeFrame := make([]byte, headerLength+FrameLengthSize+dataLength)
 
 	// Copy the header if it's there
-	if fs.Header != nil {
+	if fs.Header != nil && headerLength > 0 {
 		copy(wholeFrame[:headerLength], fs.Header)
 		// We only want to send the header once
 		fs.Header = nil
@@ -59,15 +57,7 @@ func (fs *FrameSocket) SendFrame(data []byte) error {
 	// Copy actual frame data
 	copy(wholeFrame[headerLength+FrameLengthSize:], data)
 
-	// if fs.WriteTimeout > 0 {
-	// 	err := conn.SetWriteDeadline(time.Now().Add(fs.WriteTimeout))
-	// 	if err != nil {
-	// 		fs.log.Warnf("Failed to set write deadline: %v", err)
-	// 	}
-	// }
-	// return conn.WriteMessage(websocket.BinaryMessage, wholeFrame)
-
-	return nil
+	return wholeFrame, nil
 }
 
 func (fs *FrameSocket) frameComplete() {

@@ -29,7 +29,7 @@ func (cli *Client) doHandshake(fs *FrameSocket, ephemeralKP KeyPair) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal handshake message: %w", err)
 	}
-	err = fs.SendFrame(data)
+	_, err = fs.SendFrame(data)
 	if err != nil {
 		return fmt.Errorf("failed to send handshake message: %w", err)
 	}
@@ -103,7 +103,7 @@ func (cli *Client) doHandshake(fs *FrameSocket, ephemeralKP KeyPair) error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal handshake finish message: %w", err)
 	}
-	err = fs.SendFrame(data)
+	_, err = fs.SendFrame(data)
 	if err != nil {
 		return fmt.Errorf("failed to send handshake finish message: %w", err)
 	}

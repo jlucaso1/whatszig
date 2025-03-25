@@ -1,8 +1,9 @@
 const std = @import("std");
-const ws = @import("websocket");
+const ws = @import("./websocket.zig");
 const json = std.json;
 const mem = std.mem;
 const Allocator = mem.Allocator;
+const tls = @import("tls");
 
 // Import Go functions
 const c = @cImport({
@@ -22,7 +23,7 @@ pub const WhatsAppError = error{
 
 pub const WhatsAppClient = struct {
     allocator: Allocator,
-    websocket: ?ws.Client,
+    websocket: ?*ws.WebSocketClient, // Change to pointer type
     initialized: bool,
     connected: bool,
 
@@ -38,8 +39,10 @@ pub const WhatsAppClient = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.websocket) |*socket| {
-            socket.close(.{}) catch {};
+        if (self.websocket) |socket| {
+            socket.close() catch {}; // Use direct pointer
+            self.allocator.destroy(socket);
+            self.websocket = null;
         }
 
         // Avoid calling the C function directly
@@ -77,6 +80,26 @@ pub const WhatsAppClient = struct {
             return;
         }
 
+        var prng = std.Random.DefaultPrng.init(blk: {
+            var seed: u64 = undefined;
+            try std.posix.getrandom(std.mem.asBytes(&seed));
+            break :blk seed;
+        });
+        const rand = prng.random();
+
+        // Create a WebSocketClient on the heap
+        var client = try self.allocator.create(ws.WebSocketClient);
+        client.* = ws.WebSocketClient.init(self.allocator, rand);
+        errdefer {
+            client.deinit() catch {};
+            self.allocator.destroy(client);
+        }
+
+        try client.connect("web.whatsapp.com", 443, "/ws/chat");
+
+        self.websocket = client;
+        std.debug.print("WebSocket connection established\n", .{});
+
         // Get handshake data from Go library
         const handshake_data = c.GetHandshakeData();
         defer std.c.free(handshake_data);
@@ -90,21 +113,6 @@ pub const WhatsAppClient = struct {
         );
         defer parsed.deinit();
 
-        // Connect WebSocket with proper TLS setup and browser-like headers
-        var client = try ws.Client.init(self.allocator, .{ .host = "web.whatsapp.com", .port = 443, .tls = true });
-
-        const request_path = "/ws/chat";
-
-        const headers = "Origin: https://web.whatsapp.com";
-
-        try client.handshake(request_path, .{
-            .headers = headers,
-            .timeout_ms = 30000, // Longer timeout for connection
-        });
-
-        self.websocket = client;
-        std.debug.print("WebSocket connection established\n", .{});
-
         // Send initial handshake
         try self.performHandshake(parsed.value);
 
@@ -114,8 +122,9 @@ pub const WhatsAppClient = struct {
 
         const connect_str = std.mem.span(connect_result);
         if (!mem.eql(u8, connect_str, "Connected successfully")) {
-            if (self.websocket) |*socket| {
-                try socket.close(.{});
+            if (self.websocket) |socket| {
+                socket.close() catch {}; // Use direct pointer
+                self.allocator.destroy(socket);
                 self.websocket = null;
             }
             std.debug.print("Connection failed: {s}\n", .{connect_str});
@@ -145,6 +154,7 @@ pub const WhatsAppClient = struct {
         else
             return WhatsAppError.HandshakeError;
 
+        _ = pubkey_b64;
         // Decode from base64
         var header_buffer: [128]u8 = undefined;
         try std.base64.standard.Decoder.decode(
@@ -156,18 +166,125 @@ pub const WhatsAppClient = struct {
         const header = try self.allocator.dupe(u8, &header_buffer);
         defer self.allocator.free(header);
 
-        // Send initial header
-        try self.websocket.?.write(header);
+        // Send initial header. This has an error because is sending a 128 length message, but need to send exact 43.
+        try self.sendMessage(header[0..43]);
 
-        // Create client hello message
-        // Note: In a real implementation, you would create a proper ClientHello
-        // protobuf message using the public key from handshake_data
-        const client_hello_buffer: [256]u8 = undefined;
-        _ = client_hello_buffer;
-        _ = pubkey_b64; // Use this in the actual ClientHello message
+        // Receive the server's response instead of starting an infinite listener
+        if (self.websocket == null) {
+            return WhatsAppError.NotConnected;
+        }
 
-        // Now we'll start a listener for the WebSocket
+        var socket_ptr = self.websocket.?;
+
+        // Receive the server's response to our handshake
+        const response = try socket_ptr.receiveMessage();
+
+        if (response.len == 0 or response.len != 350) {
+            return WhatsAppError.InvalidResponse;
+        }
+
+        const responseLen: c_int = @intCast(response.len);
+
+        // Pass both the pointer and length to Go function
+        const result = c.SendHandshakeResponse(response.ptr, responseLen);
+        defer std.c.free(result);
+
+        const result_str = std.mem.span(result);
+
+        // verify if result_str contains error
+        if (std.mem.indexOf(u8, result_str, "Error") != null) {
+            std.debug.print("Handshake error: {s}\n", .{result_str});
+            return WhatsAppError.HandshakeError;
+        }
+
+        // Clean the base64 string
+        const cleaned_result = try cleanBase64(self.allocator, result_str);
+        defer self.allocator.free(cleaned_result);
+
+        // Add proper padding to base64 string if needed
+        const padded_result = try ensureBase64Padding(self.allocator, cleaned_result);
+        defer self.allocator.free(padded_result);
+
+        // Use a safe function to decode the base64 string
+        const decoded_data = try safeBase64Decode(self.allocator, padded_result);
+        defer self.allocator.free(decoded_data);
+
+        // Send the decoded data
+        try self.sendMessage(decoded_data);
+
+        // receive server message again
+        const server_response = try socket_ptr.receiveMessage();
+        if (server_response.len == 0) {
+            return WhatsAppError.InvalidResponse;
+        }
+
+        std.debug.print("Server response: {x}\n", .{server_response});
+
+        // Now we can start the continuous listener if needed
         try self.startSocketListener();
+    }
+
+    // Function to clean a base64 string, removing invalid characters
+    fn cleanBase64(allocator: Allocator, input: []const u8) ![]const u8 {
+        var buffer = try allocator.alloc(u8, input.len);
+        errdefer allocator.free(buffer);
+
+        var len: usize = 0;
+        for (input) |char| {
+            // Only keep valid base64 characters
+            if ((char >= 'A' and char <= 'Z') or
+                (char >= 'a' and char <= 'z') or
+                (char >= '0' and char <= '9') or
+                char == '+' or char == '/' or char == '=')
+            {
+                buffer[len] = char;
+                len += 1;
+            }
+        }
+
+        return allocator.realloc(buffer, len);
+    }
+
+    // Function to safely decode base64 with better error handling
+    fn safeBase64Decode(allocator: Allocator, input: []const u8) ![]u8 {
+        // Calculate max size needed (4 base64 chars → 3 bytes)
+        const max_len = input.len * 3 / 4 + 1;
+        const buffer = try allocator.alloc(u8, max_len);
+        errdefer allocator.free(buffer);
+
+        // Try to decode, and handle any errors
+        var actual_len: usize = 0;
+        std.base64.standard.Decoder.decode(buffer, input) catch |err| {
+            std.debug.print("Base64 decode error: {}\n", .{err});
+            // On error, at least return what we have - could be partial decode
+            // For a more robust solution, we could implement our own base64 decoder
+            return allocator.realloc(buffer, 0);
+        };
+
+        actual_len = buffer.len;
+        return allocator.realloc(buffer, actual_len);
+    }
+
+    // Helper function to ensure base64 string has proper padding
+    fn ensureBase64Padding(allocator: Allocator, input: []const u8) ![]const u8 {
+        // If already a multiple of 4, no padding needed
+        if (input.len % 4 == 0) return allocator.dupe(u8, input);
+
+        // Calculate padding needed
+        const padding_needed = 4 - (input.len % 4);
+
+        // Allocate a new buffer with space for padding
+        var result = try allocator.alloc(u8, input.len + padding_needed);
+
+        // Copy the original string - fix by specifying the destination slice length
+        @memcpy(result[0..input.len], input);
+
+        // Add padding characters
+        for (0..padding_needed) |i| {
+            result[input.len + i] = '=';
+        }
+
+        return result;
     }
 
     fn startSocketListener(self: *Self) !void {
@@ -176,31 +293,13 @@ pub const WhatsAppClient = struct {
         }
 
         // Start a separate thread to listen for WebSocket messages
-        var socket = self.websocket.?;
+        var socket_ptr = self.websocket.?;
 
         // Listen for messages
         while (true) {
-            const message = (try socket.read()) orelse {
-                std.time.sleep(100 * std.time.ns_per_ms);
-                continue;
-            };
+            const message = try socket_ptr.receiveMessage();
 
-            defer socket.done(message);
-
-            switch (message.type) {
-                .text => {
-                    std.debug.print("Received text: {s}\n", .{message.data});
-                },
-                .binary => {
-                    std.debug.print("Received binary data: {} bytes\n", .{message.data.len});
-                },
-                .ping => try socket.writePong(message.data),
-                .pong => {},
-                .close => {
-                    try socket.close(.{});
-                    break;
-                },
-            }
+            std.debug.print("Received message: {d}\n", .{message.len});
         }
     }
 
@@ -219,8 +318,9 @@ pub const WhatsAppClient = struct {
             return;
         }
 
-        if (self.websocket) |*socket| {
-            socket.close() catch {};
+        if (self.websocket) |socket| {
+            socket.close() catch {}; // Use direct pointer
+            self.allocator.destroy(socket);
             self.websocket = null;
         }
 
@@ -241,10 +341,20 @@ pub const WhatsAppClient = struct {
         const info_str = std.mem.span(info);
         return try self.allocator.dupe(u8, info_str);
     }
+
+    pub fn sendMessage(self: *Self, data: []u8) !void {
+        if (!self.initialized) {
+            return WhatsAppError.NotInitialized;
+        }
+
+        try self.websocket.?.sendBinary(data);
+
+        std.debug.print("Sent message: {d}\n", .{data.len});
+    }
 };
 
 // Helper function to create a WhatsApp client
-pub fn createWhatsAppClient(allocator: Allocator) !*WhatsAppClient {
+pub fn createWhatsAppClient(allocator: std.mem.Allocator) !*WhatsAppClient {
     const client = try allocator.create(WhatsAppClient);
     client.* = WhatsAppClient.init(allocator);
     return client;

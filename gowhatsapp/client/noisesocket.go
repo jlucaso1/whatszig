@@ -31,9 +31,6 @@ func newNoiseSocket(fs *FrameSocket, writeKey, readKey cipher.AEAD, frameHandler
 		onFrame:      frameHandler,
 		stopConsumer: make(chan struct{}),
 	}
-	fs.OnDisconnect = func(remote bool) {
-		disconnectHandler(ns, remote)
-	}
 	go ns.consumeFrames(fs.ctx, fs.Frames)
 	return ns, nil
 }
@@ -70,7 +67,7 @@ func (ns *NoiseSocket) SendFrame(plaintext []byte) error {
 	ns.writeLock.Lock()
 	ciphertext := ns.writeKey.Seal(nil, generateIV(ns.writeCounter), plaintext, nil)
 	ns.writeCounter++
-	err := ns.fs.SendFrame(ciphertext)
+	_, err := ns.fs.SendFrame(ciphertext)
 	ns.writeLock.Unlock()
 	return err
 }

@@ -84,11 +84,6 @@ pub fn build(b: *std.Build) void {
     go_lib.setEnvironmentVariable("CC", b.fmt("zig cc -target {s}", .{target_triple}));
     go_lib.setEnvironmentVariable("CXX", b.fmt("zig c++ -target {s}", .{target_triple}));
 
-    const ws = b.dependency("websocket", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     // We will also create a module for our other entry point, 'main.zig'.
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -106,8 +101,6 @@ pub fn build(b: *std.Build) void {
     exe.addObjectFile(b.path("gowhatsapp/client/libwhatsapp.a"));
 
     exe.linkLibC();
-
-    exe.root_module.addImport("websocket", ws.module("websocket"));
 
     // Make go_lib depend on go_deps
     if (!fast_mode) {

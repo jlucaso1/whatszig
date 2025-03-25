@@ -150,21 +150,7 @@ func NewClient() *Client {
 
 		AutoTrustIdentity: true,
 	}
-	cli.nodeHandlers = map[string]nodeHandler{
-		// "message":      cli.handleEncryptedMessage,
-		// "appdata":      cli.handleEncryptedMessage,
-		// "receipt":      cli.handleReceipt,
-		// "call":         cli.handleCallEvent,
-		// "chatstate":    cli.handleChatState,
-		// "presence":     cli.handlePresence,
-		// "notification": cli.handleNotification,
-		// "success":      cli.handleConnectSuccess,
-		// "failure":      cli.handleConnectFailure,
-		// "stream:error": cli.handleStreamError,
-		// "iq":           cli.handleIQ,
-		// "ib":           cli.handleIB,
-		// Apparently there's also an <error> node which can have a code=479 and means "Invalid stanza sent (smax-invalid)"
-	}
+
 	return cli
 }
 
